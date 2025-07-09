@@ -8,7 +8,7 @@ normalization. This is done for internal use only.
 """
 import keras
 import keras.ops as K
-
+import tensorflow as tf
 from .utils import _maybe_transpose_kernel, _zero_upscale2D, l2_normalize
 
 DEFAULT_BETA_BJORCK = 0.5
@@ -221,7 +221,7 @@ def spectral_normalization(
     """
 
     if u is None:
-        u = keras.random.uniform(
+        u = tf.random.uniform(
             shape=(1, kernel.shape[-1]), minval=0.0, maxval=1.0, dtype=kernel.dtype
         )
 
@@ -345,7 +345,7 @@ def spectral_normalization_conv(
         kernel, u.shape, stride, conv_first, pad_func
     )
 
-    u = l2_normalize(u) + keras.random.uniform(u.shape, minval=-eps, maxval=eps)
+    u = l2_normalize(u) + tf.random.uniform(u.shape, minval=-eps, maxval=eps, dtype=u.dtype)
     u = _power_iteration(linear_op, adjoint_op, u, eps, maxiter)
 
     # Compute the largest singular value and the normalized kernel
