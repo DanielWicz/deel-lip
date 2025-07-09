@@ -301,7 +301,12 @@ class FrobeniusDense(Dense, LipschitzLayer, Condensable):
     def build(self, input_shape):
         super(FrobeniusDense, self).build(input_shape)
         self._init_lip_coef(input_shape)
-        self.wbar = keras.Variable(self.kernel.value, trainable=False, name="wbar")
+        self.wbar = self.add_weight(
+            name="wbar",
+            shape=self.kernel.shape,
+            initializer=lambda *_: self.kernel,  # start identical to `kernel`
+            trainable=False,
+        )
         self.built = True
 
     def _compute_lip_coef(self, input_shape=None):
