@@ -23,6 +23,7 @@ be done by setting the param `eps_bjorck=None`.
 
 import keras
 import keras.ops as K
+import tensorflow as tf
 from keras.initializers import RandomNormal
 from keras.layers import Dense
 from keras.saving import register_keras_serializable
