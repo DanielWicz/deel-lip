@@ -216,7 +216,14 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             dtype=self.dtype,
         )
         self.sig.assign([[1.0]])
-        self.wbar = keras.Variable(self.kernel.value, trainable=False, name="wbar")
+        self.wbar = self.add_weight(
+           name="wbar",
+           shape=self.kernel.shape,
+           initializer="zeros",      # placeholder, immediately overwritten
+           trainable=False,
+           dtype=self.dtype,
+       )
+        self.wbar.assign(self.kernel)  # start with raw kernel weights
         self.built = True
 
     def _compute_lip_coef(self, input_shape=None):
