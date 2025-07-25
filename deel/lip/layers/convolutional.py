@@ -199,32 +199,48 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         self.maxiter_spectral = maxiter_spectral
 
     def build(self, input_shape):
-        super(SpectralConv2D, self).build(input_shape)
+        """
+        Allocate kernels *and* spectral-normalisation buffers on the
+        **current replica’s device** so that each GPU owns its own copy.
+        All buffers use Sync-On-Read + NONE aggregation, making local
+        `.assign()` updates legal under `MirroredStrategy` + XLA.
+        """
+        super().build(input_shape)                         # ← creates self.kernel
+
+        # lipschitz coefficient used by _get_coef()
         self._init_lip_coef(input_shape)
+
+        # ── replica-local helper tensors ─────────────────────────────────
         self.u = self.add_weight(
-            shape=(1, self.filters),
-            initializer=RandomNormal(0, 1),
             name="sn",
-            trainable=False,
+            shape=(1, self.filters),
             dtype=self.dtype,
+            initializer=tf.keras.initializers.RandomNormal(0., 1.),
+            trainable=False,
+            synchronization=tf.VariableSynchronization.ON_READ,
+            aggregation=tf.VariableAggregation.NONE,
         )
 
         self.sig = self.add_weight(
-            shape=(1, 1),  # maximum spectral value
             name="sigma",
-            trainable=False,
+            shape=(1, 1),
             dtype=self.dtype,
+            initializer=tf.keras.initializers.Ones(),
+            trainable=False,
+            synchronization=tf.VariableSynchronization.ON_READ,
+            aggregation=tf.VariableAggregation.NONE,
         )
-        self.sig.assign([[1.0]])
+
+        # start wbar equal to the raw kernel; will be updated at every step
         self.wbar = self.add_weight(
-           name="wbar",
-           shape=self.kernel.shape,
-           initializer="zeros",      # placeholder, immediately overwritten
-           trainable=False,
-           dtype=self.dtype,
-       )
-        self.wbar.assign(self.kernel)  # start with raw kernel weights
-        self.built = True
+            name="wbar",
+            shape=self.kernel.shape,
+            dtype=self.dtype,
+            initializer=lambda *_, **__: self.kernel,
+            trainable=False,
+            synchronization=tf.VariableSynchronization.ON_READ,
+            aggregation=tf.VariableAggregation.NONE,
+        )
 
     def _compute_lip_coef(self, input_shape=None):
         return _compute_conv_lip_factor(
@@ -232,24 +248,32 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         )
 
     def call(self, x, training=True):
+        """
+        Forward pass with spectral normalisation.
+
+        * During training we recompute `wbar`, `u`, and `sigma`
+          and **update them locally** (no cross-replica sync).
+        * During inference we reuse the stored `wbar`.
+        """
         if training:
-            wbar, u, sigma = reshaped_kernel_orthogonalization(
-                self.kernel,
-                self.u,
-                self._get_coef(),
+            wbar, u_new, sigma_new = reshaped_kernel_orthogonalization(
+                self.kernel,            # raw weights
+                self.u,                 # power-iteration vector
+                self._get_coef(),       # Lipschitz scaling
                 self.eps_spectral,
                 self.eps_bjorck,
                 self.beta_bjorck,
                 self.maxiter_spectral,
                 self.maxiter_bjorck,
             )
+            # local, replica-safe updates
             self.wbar.assign(wbar)
-            self.u.assign(u)
-            self.sig.assign(sigma)
+            self.u.assign(u_new)
+            self.sig.assign(sigma_new)
         else:
             wbar = self.wbar
 
-        # Compute Conv2D operation (copied from keras.layers.Conv2D)
+        # ----- regular Conv2D computation (copied from Keras) ----------
         outputs = K.conv(
             x,
             wbar,
@@ -260,16 +284,14 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         )
 
         if self.use_bias:
-            if self.data_format == "channels_last":
-                bias_shape = (1,) * (self.rank + 1) + (self.filters,)
-            else:
-                bias_shape = (1, self.filters) + (1,) * self.rank
-            bias = K.reshape(self.bias, bias_shape)
-            outputs += bias
+            bias_shape = (
+                (1,) * (self.rank + 1) + (self.filters,)
+                if self.data_format == "channels_last"
+                else (1, self.filters) + (1,) * self.rank
+            )
+            outputs += tf.reshape(self.bias, bias_shape)
 
-        if self.activation is not None:
-            return self.activation(outputs)
-        return outputs
+        return self.activation(outputs) if self.activation else outputs
 
     def get_config(self):
         config = {
