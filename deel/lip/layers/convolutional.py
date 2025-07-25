@@ -205,33 +205,34 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         )
 
     def build(self, input_shape):
-        # ── standard Conv2D weights ────────────────────────────────────────
-        super().build(input_shape)               # → self.kernel / self.bias
+        # ── standard Conv2D weights ───────────────────────────────────────
+        super().build(input_shape)
         self._init_lip_coef(input_shape)
 
-        # ── power-iteration vector **u** & running σ ───────────────────────
+        # ── replica-local power-iteration vector ─────────────────────────
         self.u = self.add_weight(
-            "sn",
+            name="sn",                              # ← keyword!
             shape=(1, self.filters),
             initializer=tf.keras.initializers.RandomNormal(0., 1.),
             trainable=False,
         )
+
+        # ── running spectral value σ ─────────────────────────────────────
         self.sig = self.add_weight(
-            "sigma",
+            name="sigma",                           # ← keyword!
             shape=(1, 1),
             initializer=tf.keras.initializers.Ones(),
             trainable=False,
         )
 
-        # ── orthogonalised kernel copy (replica-local) ─────────────────────
+        # ── orthogonalised kernel copy (wbar) ────────────────────────────
         self.wbar = self.add_weight(
-            "wbar",
+            name="wbar",                            # ← keyword!
             shape=self.kernel.shape,
-            initializer="zeros",        # allocate tensor on the *local* device
+            initializer="zeros",                    # allocate on-device
             trainable=False,
         )
-        # copy value once, inside eager/init scope → no cross-device handle
-        with tf.init_scope():
+        with tf.init_scope():                       # eager, local replica
             self.wbar.assign(self.kernel)
 
 
