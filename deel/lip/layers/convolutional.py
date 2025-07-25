@@ -215,7 +215,7 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             shape=(1, self.filters),
             initializer=tf.keras.initializers.RandomNormal(0., 1.),
             trainable=False,
-            aggregation="only_first_replica",
+            aggregation="none",
         )
 
         # ── running spectral value σ ─────────────────────────────────────
@@ -224,7 +224,7 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             shape=(1, 1),
             initializer=tf.keras.initializers.Ones(),
             trainable=False,
-            aggregation="only_first_replica",
+            aggregation="none",
         )
 
         # ── orthogonalised kernel copy (wbar) ────────────────────────────
@@ -233,7 +233,7 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             shape=self.kernel.shape,
             initializer="zeros",                    # allocate on-device
             trainable=False,
-            aggregation="only_first_replica",
+            aggregation="none",
         )
         with tf.init_scope():                       # eager, local replica
             self.wbar.assign(self.kernel)
