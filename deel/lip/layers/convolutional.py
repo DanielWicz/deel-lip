@@ -205,28 +205,34 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         )
 
     def build(self, input_shape):
-        super().build(input_shape)                       # kernel / bias
+        super().build(input_shape)           # creates self.kernel / self.bias
         self._init_lip_coef(input_shape)
 
-        # replica-local buffers, registered as non-trainable weights
+        # ── power-iteration vector ──────────────────────────────────────
         self.u = self.add_weight(
             name="sn",
             shape=(1, self.filters),
-            initializer=tf.keras.initializers.RandomNormal(0., 1.),
+            initializer=tf.keras.initializers.RandomNormal(0.0, 1.0),
             trainable=False,
         )
+
+        # ── running spectral value σ  ───────────────────────────────────
         self.sig = self.add_weight(
             name="sigma",
             shape=(1, 1),
             initializer=tf.keras.initializers.Ones(),
             trainable=False,
         )
+
+        # ── orthogonalised kernel (wbar)  ───────────────────────────────
         self.wbar = self.add_weight(
             name="wbar",
             shape=self.kernel.shape,
-            initializer=lambda *_: self.kernel,
+            # ← initializer must accept (shape, dtype) even if we ignore them
+            initializer=lambda shape, dtype=None: self.kernel,
             trainable=False,
         )
+
 
     def call(self, x, training=True):
         if training:
