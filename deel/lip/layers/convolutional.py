@@ -205,33 +205,35 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         )
 
     def build(self, input_shape):
-        super().build(input_shape)           # creates self.kernel / self.bias
+        # ── standard Conv2D weights ────────────────────────────────────────
+        super().build(input_shape)               # → self.kernel / self.bias
         self._init_lip_coef(input_shape)
 
-        # ── power-iteration vector ──────────────────────────────────────
+        # ── power-iteration vector **u** & running σ ───────────────────────
         self.u = self.add_weight(
-            name="sn",
+            "sn",
             shape=(1, self.filters),
-            initializer=tf.keras.initializers.RandomNormal(0.0, 1.0),
+            initializer=tf.keras.initializers.RandomNormal(0., 1.),
             trainable=False,
         )
-
-        # ── running spectral value σ  ───────────────────────────────────
         self.sig = self.add_weight(
-            name="sigma",
+            "sigma",
             shape=(1, 1),
             initializer=tf.keras.initializers.Ones(),
             trainable=False,
         )
 
-        # ── orthogonalised kernel (wbar)  ───────────────────────────────
+        # ── orthogonalised kernel copy (replica-local) ─────────────────────
         self.wbar = self.add_weight(
-            name="wbar",
+            "wbar",
             shape=self.kernel.shape,
-            # ← initializer must accept (shape, dtype) even if we ignore them
-            initializer=lambda shape, dtype=None: self.kernel,
+            initializer="zeros",        # allocate tensor on the *local* device
             trainable=False,
         )
+        # copy value once, inside eager/init scope → no cross-device handle
+        with tf.init_scope():
+            self.wbar.assign(self.kernel)
+
 
 
     def call(self, x, training=True):
