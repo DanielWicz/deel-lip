@@ -199,87 +199,62 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         self.maxiter_bjorck = maxiter_bjorck
         self.maxiter_spectral = maxiter_spectral
 
-    def build(self, input_shape):
-        """
-        Initialise kernels and the spectral-normalisation buffers
-        **on the replica’s device**.  Using `tf.Variable` avoids the
-        unsupported `synchronization` argument that caused the previous
-        TypeError.
-        """
-        super().build(input_shape)                 # creates self.kernel
-        self._init_lip_coef(input_shape)
-
-        # --- replica-local helper tensors --------------------------------
-        self.u = tf.Variable(
-            initial_value=tf.random.normal([1, self.filters], dtype=self.dtype),
-            trainable=False,
-            name="sn",
-        )
-
-        self.sig = tf.Variable(
-            initial_value=tf.ones([1, 1], dtype=self.dtype),
-            trainable=False,
-            name="sigma",
-        )
-
-        # start wbar equal to the raw kernel; it will be updated each step
-        self.wbar = tf.Variable(
-            initial_value=self.kernel,
-            trainable=False,
-            name="wbar",
-        )
-
-
-
     def _compute_lip_coef(self, input_shape=None):
         return _compute_conv_lip_factor(
             self.kernel_size, self.strides, input_shape, self.data_format
         )
 
-    def call(self, x, training=True):
-        """
-        Forward pass with spectral normalisation.
+    def build(self, input_shape):
+        super().build(input_shape)                       # kernel / bias
+        self._init_lip_coef(input_shape)
 
-        During *training* we recompute `wbar`, `u`, `sigma` locally;
-        during *inference* we reuse the stored `wbar`.
-        """
+        # replica-local buffers, registered as non-trainable weights
+        self.u = self.add_weight(
+            name="sn",
+            shape=(1, self.filters),
+            initializer=tf.keras.initializers.RandomNormal(0., 1.),
+            trainable=False,
+        )
+        self.sig = self.add_weight(
+            name="sigma",
+            shape=(1, 1),
+            initializer=tf.keras.initializers.Ones(),
+            trainable=False,
+        )
+        self.wbar = self.add_weight(
+            name="wbar",
+            shape=self.kernel.shape,
+            initializer=lambda *_: self.kernel,
+            trainable=False,
+        )
+
+    def call(self, x, training=True):
         if training:
-            wbar, u_new, sigma_new = reshaped_kernel_orthogonalization(
-                self.kernel,
-                self.u,
-                self._get_coef(),
-                self.eps_spectral,
-                self.eps_bjorck,
-                self.beta_bjorck,
-                self.maxiter_spectral,
-                self.maxiter_bjorck,
+            wbar, u_new, sig_new = reshaped_kernel_orthogonalization(
+                self.kernel, self.u, self._get_coef(),
+                self.eps_spectral, self.eps_bjorck, self.beta_bjorck,
+                self.maxiter_spectral, self.maxiter_bjorck,
             )
-            # local in-place updates (replica-safe)
-            self.wbar.assign(wbar)
+            self.wbar.assign(wbar)    # local updates (OK under MirroredStrategy)
             self.u.assign(u_new)
-            self.sig.assign(sigma_new)
+            self.sig.assign(sig_new)
         else:
             wbar = self.wbar
 
-        # ---------- standard Conv2D computation --------------------------
-        outputs = K.conv(
-            x,
-            wbar,
+        y = K.conv(
+            x, wbar,
             strides=list(self.strides),
             padding=self.padding,
             dilation_rate=self.dilation_rate,
             data_format=self.data_format,
         )
-
         if self.use_bias:
-            bias_shape = (
-                (1,) * (self.rank + 1) + (self.filters,)
-                if self.data_format == "channels_last"
-                else (1, self.filters) + (1,) * self.rank
-            )
-            outputs += tf.reshape(self.bias, bias_shape)
+            bias_shape = ((1,)*(self.rank+1)+(self.filters,)
+                          if self.data_format=="channels_last"
+                          else (1,self.filters)+(1,)*self.rank)
+            y += tf.reshape(self.bias, bias_shape)
+        return self.activation(y) if self.activation else y
 
-        return self.activation(outputs) if self.activation else outputs
 
 
     def get_config(self):
