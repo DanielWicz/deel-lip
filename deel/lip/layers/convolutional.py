@@ -24,6 +24,7 @@ be done by setting the param `eps_bjorck=None`.
 import numpy as np
 import keras
 import keras.ops as K
+import tensorflow as tf
 from keras.initializers import RandomNormal
 from keras.layers import Conv2D, Conv2DTranspose
 from keras.saving import register_keras_serializable
