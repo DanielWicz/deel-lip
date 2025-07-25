@@ -201,47 +201,35 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
 
     def build(self, input_shape):
         """
-        Allocate kernels *and* spectral-normalisation buffers on the
-        **current replica’s device** so that each GPU owns its own copy.
-        All buffers use Sync-On-Read + NONE aggregation, making local
-        `.assign()` updates legal under `MirroredStrategy` + XLA.
+        Initialise kernels and the spectral-normalisation buffers
+        **on the replica’s device**.  Using `tf.Variable` avoids the
+        unsupported `synchronization` argument that caused the previous
+        TypeError.
         """
-        super().build(input_shape)                         # ← creates self.kernel
-
-        # lipschitz coefficient used by _get_coef()
+        super().build(input_shape)                 # creates self.kernel
         self._init_lip_coef(input_shape)
 
-        # ── replica-local helper tensors ─────────────────────────────────
-        self.u = self.add_weight(
+        # --- replica-local helper tensors --------------------------------
+        self.u = tf.Variable(
+            initial_value=tf.random.normal([1, self.filters], dtype=self.dtype),
+            trainable=False,
             name="sn",
-            shape=(1, self.filters),
-            dtype=self.dtype,
-            initializer=tf.keras.initializers.RandomNormal(0., 1.),
-            trainable=False,
-            synchronization=tf.VariableSynchronization.ON_READ,
-            aggregation=tf.VariableAggregation.NONE,
         )
 
-        self.sig = self.add_weight(
+        self.sig = tf.Variable(
+            initial_value=tf.ones([1, 1], dtype=self.dtype),
+            trainable=False,
             name="sigma",
-            shape=(1, 1),
-            dtype=self.dtype,
-            initializer=tf.keras.initializers.Ones(),
-            trainable=False,
-            synchronization=tf.VariableSynchronization.ON_READ,
-            aggregation=tf.VariableAggregation.NONE,
         )
 
-        # start wbar equal to the raw kernel; will be updated at every step
-        self.wbar = self.add_weight(
-            name="wbar",
-            shape=self.kernel.shape,
-            dtype=self.dtype,
-            initializer=lambda *_, **__: self.kernel,
+        # start wbar equal to the raw kernel; it will be updated each step
+        self.wbar = tf.Variable(
+            initial_value=self.kernel,
             trainable=False,
-            synchronization=tf.VariableSynchronization.ON_READ,
-            aggregation=tf.VariableAggregation.NONE,
+            name="wbar",
         )
+
+
 
     def _compute_lip_coef(self, input_shape=None):
         return _compute_conv_lip_factor(
@@ -252,29 +240,28 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         """
         Forward pass with spectral normalisation.
 
-        * During training we recompute `wbar`, `u`, and `sigma`
-          and **update them locally** (no cross-replica sync).
-        * During inference we reuse the stored `wbar`.
+        During *training* we recompute `wbar`, `u`, `sigma` locally;
+        during *inference* we reuse the stored `wbar`.
         """
         if training:
             wbar, u_new, sigma_new = reshaped_kernel_orthogonalization(
-                self.kernel,            # raw weights
-                self.u,                 # power-iteration vector
-                self._get_coef(),       # Lipschitz scaling
+                self.kernel,
+                self.u,
+                self._get_coef(),
                 self.eps_spectral,
                 self.eps_bjorck,
                 self.beta_bjorck,
                 self.maxiter_spectral,
                 self.maxiter_bjorck,
             )
-            # local, replica-safe updates
+            # local in-place updates (replica-safe)
             self.wbar.assign(wbar)
             self.u.assign(u_new)
             self.sig.assign(sigma_new)
         else:
             wbar = self.wbar
 
-        # ----- regular Conv2D computation (copied from Keras) ----------
+        # ---------- standard Conv2D computation --------------------------
         outputs = K.conv(
             x,
             wbar,
@@ -293,6 +280,7 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             outputs += tf.reshape(self.bias, bias_shape)
 
         return self.activation(outputs) if self.activation else outputs
+
 
     def get_config(self):
         config = {
