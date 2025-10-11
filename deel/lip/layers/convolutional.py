@@ -213,9 +213,9 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         self.u = self.add_weight(
             name="sn",                              # ← keyword!
             shape=(1, self.filters),
-            initializer=tf.keras.initializers.RandomNormal(0., 1.),
+            initializer=tf.keras.initializers.RandomNormal(0.0, 1.0),
             trainable=False,
-            aggregation="none",
+            dtype=self.dtype,
         )
 
         # ── running spectral value σ ─────────────────────────────────────
@@ -224,7 +224,7 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             shape=(1, 1),
             initializer=tf.keras.initializers.Ones(),
             trainable=False,
-            aggregation="none",
+            dtype=self.dtype,
         )
 
         # ── orthogonalised kernel copy (wbar) ────────────────────────────
@@ -233,7 +233,7 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             shape=self.kernel.shape,
             initializer="zeros",                    # allocate on-device
             trainable=False,
-            aggregation="none",
+            dtype=self.dtype,
         )
         with tf.init_scope():                       # eager, local replica
             self.wbar.assign(self.kernel)
@@ -280,6 +280,18 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         }
         base_config = super(SpectralConv2D, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
+
+    def save_own_variables(self, store):
+        super().save_own_variables(store)
+        store["sn"] = self.u.numpy()
+        store["sigma"] = self.sig.numpy()
+        store["wbar"] = self.wbar.numpy()
+
+    def load_own_variables(self, store):
+        super().load_own_variables(store)
+        self.u.assign(store["sn"])
+        self.sig.assign(store["sigma"])
+        self.wbar.assign(store["wbar"])
 
     def condense(self):
         wbar, u, sigma = reshaped_kernel_orthogonalization(
