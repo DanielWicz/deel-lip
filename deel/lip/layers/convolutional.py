@@ -281,6 +281,21 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         base_config = super(SpectralConv2D, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
+    def save_own_variables(self, store):
+        super().save_own_variables(store)
+        store["sn"] = self.u.numpy()
+        store["sigma"] = self.sig.numpy()
+        store["wbar"] = self.wbar.numpy()
+
+    def load_own_variables(self, store):
+        super().load_own_variables(store)
+        if "sn" in store:
+            self.u.assign(store["sn"])
+        if "sigma" in store:
+            self.sig.assign(store["sigma"])
+        if "wbar" in store:
+            self.wbar.assign(store["wbar"])
+
     def condense(self):
         wbar, u, sigma = reshaped_kernel_orthogonalization(
             self.kernel,
@@ -529,6 +544,21 @@ class SpectralConv2DTranspose(Conv2DTranspose, LipschitzLayer, Condensable):
         }
         base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
+
+    def save_own_variables(self, store):
+        super().save_own_variables(store)
+        store["sn"] = self.u.numpy()
+        store["sigma"] = self.sig.numpy()
+        store["wbar"] = self.wbar.numpy()
+
+    def load_own_variables(self, store):
+        super().load_own_variables(store)
+        if "sn" in store:
+            self.u.assign(store["sn"])
+        if "sigma" in store:
+            self.sig.assign(store["sigma"])
+        if "wbar" in store:
+            self.wbar.assign(store["wbar"])
 
     def condense(self):
         wbar, u, sigma = reshaped_kernel_orthogonalization(
