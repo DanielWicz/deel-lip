@@ -226,8 +226,6 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             trainable=False,
             dtype=self.dtype,
         )
-        with tf.init_scope():
-            self.sig.assign(tf.ones((1, 1), dtype=self.dtype))
 
         # ── orthogonalised kernel copy (wbar) ────────────────────────────
         self.wbar = self.add_weight(
@@ -237,8 +235,8 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
             trainable=False,
             dtype=self.dtype,
         )
-        with tf.init_scope():  # eager, local replica
-            self.wbar.assign(tf.identity(self.kernel))
+        with tf.init_scope():
+            self._restore_auxiliary_state(from_kernel=True)
 
 
 
@@ -318,6 +316,52 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
         if self.use_bias:
             layer.bias.assign(self.bias)
         return layer
+
+    def _restore_auxiliary_state(self, from_kernel=False):
+        """Synchronize cached spectral variables with the current kernel."""
+        kernel_dtype = self.kernel.dtype
+        if not from_kernel:
+            self.u.assign(tf.random.normal((1, self.filters), dtype=kernel_dtype))
+        self.sig.assign(tf.ones((1, 1), dtype=kernel_dtype))
+        self.wbar.assign(tf.identity(self.kernel))
+
+    def save_own_variables(self, store):
+        super().save_own_variables(store)
+        store["sn"] = self.u.numpy()
+        store["sigma"] = self.sig.numpy()
+        store["wbar"] = self.wbar.numpy()
+
+    def load_own_variables(self, store):
+        super().load_own_variables(store)
+        self.u.assign(store["sn"])
+        self.sig.assign(store["sigma"])
+        self.wbar.assign(store["wbar"])
+
+    def set_weights(self, weights):
+        aux_count = 3  # sn, sigma, wbar
+        base_expected = 1 + int(self.use_bias)
+        total_expected = base_expected + aux_count
+
+        if len(weights) == total_expected:
+            super().set_weights(weights)
+            return
+
+        if len(weights) == base_expected:
+            targets = [self.kernel]
+            if self.use_bias:
+                targets.append(self.bias)
+
+            for variable, value in zip(targets, weights):
+                variable.assign(tf.convert_to_tensor(value, dtype=variable.dtype))
+
+            # Backwards compatibility: regenerate auxiliary tensors from kernel.
+            self._restore_auxiliary_state(from_kernel=False)
+            return
+
+        raise ValueError(
+            "Incorrect number of weights: expected either "
+            f"{total_expected} or {base_expected}, received {len(weights)}"
+        )
 
 
 @register_keras_serializable("deel-lip", "SpectralConv2DTranspose")
