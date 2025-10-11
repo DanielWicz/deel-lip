@@ -211,32 +211,34 @@ class SpectralConv2D(Conv2D, LipschitzLayer, Condensable):
 
         # ── replica-local power-iteration vector ─────────────────────────
         self.u = self.add_weight(
-            name="sn",                              # ← keyword!
+            name="sn",  # ← keyword!
             shape=(1, self.filters),
-            initializer=tf.keras.initializers.RandomNormal(0., 1.),
+            initializer=tf.keras.initializers.RandomNormal(0.0, 1.0),
             trainable=False,
-            aggregation="none",
+            dtype=self.dtype,
         )
 
         # ── running spectral value σ ─────────────────────────────────────
         self.sig = self.add_weight(
-            name="sigma",                           # ← keyword!
+            name="sigma",  # ← keyword!
             shape=(1, 1),
             initializer=tf.keras.initializers.Ones(),
             trainable=False,
-            aggregation="none",
+            dtype=self.dtype,
         )
+        with tf.init_scope():
+            self.sig.assign(tf.ones((1, 1), dtype=self.dtype))
 
         # ── orthogonalised kernel copy (wbar) ────────────────────────────
         self.wbar = self.add_weight(
-            name="wbar",                            # ← keyword!
+            name="wbar",  # ← keyword!
             shape=self.kernel.shape,
-            initializer="zeros",                    # allocate on-device
+            initializer=tf.keras.initializers.Zeros(),
             trainable=False,
-            aggregation="none",
+            dtype=self.dtype,
         )
-        with tf.init_scope():                       # eager, local replica
-            self.wbar.assign(self.kernel)
+        with tf.init_scope():  # eager, local replica
+            self.wbar.assign(tf.identity(self.kernel))
 
 
 
