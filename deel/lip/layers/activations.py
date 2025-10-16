@@ -30,6 +30,9 @@ class _BaseActivation(nn.Module, LipschitzLayer):
         self.set_klip_factor(k_coef_lip)
         self._built = False
 
+    def _compute_lip_coef(self, input_shape=None):
+        return 1.0
+
     def _ensure_built(self, input_shape: torch.Size) -> None:
         if not self._built:
             self._init_lip_coef(input_shape)
@@ -177,6 +180,9 @@ class _PReLUlip(nn.Module, LipschitzLayer):
         super().__init__()
         self.set_klip_factor(k_coef_lip)
         self.prelu = nn.PReLU(num_parameters=num_parameters)
+
+    def _compute_lip_coef(self, input_shape=None):
+        return 1.0
 
     def forward(self, x: Tensor) -> Tensor:
         with torch.no_grad():

@@ -75,8 +75,8 @@ class Condensable(abc.ABC):
     in the layer is not the kernel used to make predictions (called W_bar), To address
     this, these layers can implement the condense() function that make self.kernel equal
     to W_bar.
-    This operation also allows to turn the Lipschitz layer to its keras equivalent e.g.
-    The Dense layer that have the same predictions as the trained SpectralDense.
+    This operation also allows turning the Lipschitz layer into its vanilla ``torch.nn``
+    equivalent (e.g. a ``Linear`` module matching the trained ``SpectralLinear``).
     """
 
     @abc.abstractmethod

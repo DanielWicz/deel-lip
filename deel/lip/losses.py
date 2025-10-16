@@ -99,7 +99,7 @@ class KR(_BaseLoss):
 
 
 class HingeMargin(_BaseLoss):
-    def __init__(self, min_margin: float = 1.0, reduction: str = "mean", name: str = "HingeMargin"):
+    def __init__(self, min_margin: float = 1.0, reduction: str = "none", name: str = "HingeMargin"):
         super().__init__(reduction=reduction, name=name)
         self.min_margin = nn.Parameter(torch.tensor(min_margin, dtype=torch.float32), requires_grad=False)
 

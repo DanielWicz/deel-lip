@@ -34,28 +34,12 @@ Controlling the Lipschitz constant of a layer or a whole neural network
 has many applications ranging from adversarial robustness to Wasserstein
 distance estimation.
 
-This library provides an efficient implementation of **k-Lispchitz
-layers for keras**.
+This library provides an efficient implementation of **k-Lipschitz
+modules for PyTorch**.
 
-> [!CAUTION]
-> **Incompatibility with TensorFlow >= 2.16 and Keras 3**
->
-> Due to significant changes introduced in TensorFlow version 2.16 and Keras 3, this
-> package is currently incompatible with TensorFlow versions 2.16 and above. Users are
-> advised to use TensorFlow versions lower than 2.16 to ensure compatibility and proper
-> functionality of this package.
->
-> We're excited to announce that a nightly version of deel-lip with support for Keras 3
-> is now available for testing! If you'd like to experiment with the latest updates
-> and improvements, feel free to check out the `keras3` branch.
->
-> ```bash
-> pip install git+https://github.com/deel-ai/deel-lip.git@keras3
-> ```
->
-> Please note that this version is still under development and may contain experimental
-> features. We welcome your feedback and encourage you to report any issues you
-> encounter.
+> [!NOTE]
+> Looking for the historical TensorFlow/Keras implementation?
+> Check the `keras3` branch for the legacy API and migration notes.
 
 
 ## 📚 Table of contents
@@ -72,34 +56,43 @@ layers for keras**.
 
 ## 🚀 Quick Start
 
-You can install ``deel-lip`` directly from pypi:
+You can install ``deel-lip`` directly from PyPI:
 
-```python
+```bash
 pip install deel-lip
 ```
 
-In order to use ``deel-lip``, you also need a [valid tensorflow
-installation](https://www.tensorflow.org/install). ``deel-lip``
-supports tensorflow versions 2.x.
+In order to use ``deel-lip``, you also need a [valid PyTorch
+installation](https://pytorch.org/get-started/locally/). ``deel-lip``
+supports PyTorch versions 2.x.
+
+```python
+import torch
+from deel.lip.layers import SpectralLinear
+
+layer = SpectralLinear(16, 10)
+x = torch.randn(2, 16)
+print(layer(x).shape)  # torch.Size([2, 10])
+```
 
 ## 🔥 Tutorials
 
 | **Tutorial Name**           | Notebook                                                                                                                                                           |
 | :-------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| Getting started 1 - Creating a 1-Lipschitz neural network  | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/Getting_started_1.ipynb)            |
-| Getting started 2 - Training an adversarially robust 1-Lipschitz neural network         | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/Getting_started_2.ipynb)            |
-| Wasserstein distance estimation on toy example | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo1.ipynb) |
-| HKR Classifier on toy dataset | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo2.ipynb) |
-| HKR classifier on MNIST dataset | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo3.ipynb) |
-| HKR multiclass and fooling | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo4.ipynb) |
+| Getting started 1 - Building a Lipschitz MLP | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/Getting_started_1.ipynb)            |
+| Getting started 2 - Training a Lipschitz network | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/Getting_started_2.ipynb)            |
+| Demo 0 - Inspecting spectral normalization | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo0.ipynb) |
+| Demo 1 - Computing provable robustness metrics | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo1.ipynb) |
+| Demo 2 - Training with HKR loss | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo2.ipynb) |
+| Demo 3 - Exporting condensed models | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo3.ipynb) |
+| Demo 4 - Monitoring Lipschitz constraints during training | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deel-ai/deel-lip/blob/master/docs/notebooks/demo4.ipynb) |
 
 
 ## 📦 What's Included
 
-*  k-Lipschitz variant of keras layers such as ``Dense``, ``Conv2D`` and
-   ``Pooling``,
-*  activation functions compatible with ``keras``,
-*  kernel initializers and kernel constraints for ``keras``,
+*  k-Lipschitz variants of `torch.nn` layers such as ``Linear`` and ``Conv2d``,
+*  activation functions implemented with ``torch.nn`` modules,
+*  kernel initializers and kernel constraints for PyTorch parameters,
 *  loss functions that make use of Lipschitz constrained networks (see
    [our paper](https://arxiv.org/abs/2006.06520) for more
    information),
@@ -109,23 +102,7 @@ supports tensorflow versions 2.x.
 
 ## 👍 Contributing
 
-To contribute, you can open an
-[issue](https://github.com/deel-ai/deel-lip/issues), or fork this
-repository and then submit changes through a
-[pull-request](https://github.com/deel-ai/deel-lip/pulls).
-We use [black](https://pypi.org/project/black/) to format the code and follow PEP-8 convention.
-To check that your code will pass the lint-checks, you can run:
-
-```python
-tox -e py36-lint
-```
-
-You need [`tox`](https://tox.readthedocs.io/en/latest/) in order to
-run this. You can install it via `pip`:
-
-```python
-pip install tox
-```
+PyTorch implementation, Daniel Wiczew, NEBULA
 
 ## 👀 See Also
 

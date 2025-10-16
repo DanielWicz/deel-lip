@@ -12,7 +12,11 @@ from typing import Dict, Iterable, Optional
 
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    SummaryWriter = None
 
 from .layers import Condensable
 
@@ -65,6 +69,11 @@ class MonitorCallback(Callback):
     ):
         self.on_epoch = on_epoch
         self.on_batch = on_batch
+        if SummaryWriter is None:
+            raise ImportError(
+                "tensorboard is required to use MonitorCallback. "
+                "Install it with `pip install tensorboard`."
+            )
         if target not in {"kernel", "wbar"}:
             raise ValueError("target must be 'kernel' or 'wbar'.")
         if what not in {"max", "all"}:

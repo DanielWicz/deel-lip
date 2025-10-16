@@ -20,7 +20,17 @@ _MSG_NOT_LIP = "Sequential model contains a layer which is not a 1-Lipschitz lay
 
 
 def _is_supported_1lip_layer(layer: nn.Module) -> bool:
-    supported = (nn.Flatten, nn.Identity, nn.Softmax, nn.Sigmoid, nn.Tanh)
+    supported = (
+        nn.Flatten,
+        nn.Identity,
+        nn.Softmax,
+        nn.Sigmoid,
+        nn.Tanh,
+        nn.Linear,
+        nn.Conv1d,
+        nn.Conv2d,
+        nn.Conv3d,
+    )
     if isinstance(layer, supported):
         return True
     if isinstance(layer, nn.ReLU):
@@ -75,7 +85,13 @@ class Sequential(nn.Sequential, LipschitzLayer, Condensable):
                 layer.condense()
 
     def vanilla_export(self):
-        return vanillaModel(self)
+        exported_layers = []
+        for layer in self:
+            if isinstance(layer, Condensable):
+                exported_layers.append(layer.vanilla_export())
+            else:
+                exported_layers.append(copy.deepcopy(layer))
+        return Sequential(*exported_layers, k_coef_lip=1.0)
 
 
 class Model(nn.Module):

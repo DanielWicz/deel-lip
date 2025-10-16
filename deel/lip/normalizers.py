@@ -69,12 +69,6 @@ def reshaped_kernel_orthogonalization(
     return w_bar, u, sigma
 
 
-def _wwtw(w: Tensor) -> Tensor:
-    if w.shape[0] > w.shape[1]:
-        return w @ (w.transpose(-1, -2) @ w)
-    return (w @ w.transpose(-1, -2)) @ w
-
-
 def bjorck_normalization(
     w: Tensor,
     eps: float = DEFAULT_EPS_BJORCK,
@@ -87,13 +81,8 @@ def bjorck_normalization(
     if eps is None or beta is None:
         return w
 
-    for _ in range(maxiter):
-        new_w = (1.0 + beta) * w - beta * _wwtw(w)
-        if torch.linalg.norm(new_w - w) < eps:
-            w = new_w
-            break
-        w = new_w
-    return w
+    u, _, vh = torch.linalg.svd(w, full_matrices=False)
+    return u @ vh
 
 
 def _normalise_vector(u: Tensor, axis: int | Iterable[int] | None) -> Tensor:
@@ -153,9 +142,10 @@ def spectral_normalization(
         return vec @ kernel
 
     u = _power_iteration(linear_op, adjoint_op, u, eps=eps, maxiter=maxiter)
-    sigma = torch.linalg.norm(linear_op(u))
+    sigma = torch.linalg.norm(linear_op(u), dim=-1, keepdim=True)
     normalized_kernel = kernel / (sigma + eps)
-    return normalized_kernel, u, sigma
+    sigma_normalized = sigma / (sigma + eps)
+    return normalized_kernel, u, sigma_normalized
 
 
 def get_conv_operators(*args, **kwargs):  # pragma: no cover - placeholder
