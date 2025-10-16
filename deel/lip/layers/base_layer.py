@@ -2,24 +2,7 @@
 # rights reserved. DEEL is a research program operated by IVADO, IRT Saint Exupéry,
 # CRIAQ and ANITI - https://www.deel.ai/
 # =====================================================================================
-"""
-This module extends original keras layers, in order to add k lipschitz constraint via
-reparametrization. Currently, are implemented:
-* Dense layer:
-    as SpectralDense (and as FrobeniusDense when the layer has a single
-    output)
-* Conv2D layer:
-    as SpectralConv2D (and as FrobeniusConv2D when the layer has a single
-    output)
-* AveragePooling:
-    as ScaledAveragePooling
-* GlobalAveragePooling2D:
-    as ScaledGlobalAveragePooling2D
-By default the layers are 1 Lipschitz almost everywhere, which is efficient for
-wasserstein distance estimation. However for other problems (such as adversarial
-robustness) the user may want to use layers that are at most 1 lipschitz, this can
-be done by setting the param `eps_bjorck=None`.
-"""
+"""Base mixins for Lipschitz constrained PyTorch layers."""
 
 import abc
 

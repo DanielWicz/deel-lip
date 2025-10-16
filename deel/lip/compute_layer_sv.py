@@ -1,196 +1,111 @@
-"""Compute the largest and lowest singular values of a layer or network.
-
-The singular values are computed using the SVD decomposition of the weight matrix.
-For convolutional layers, the equivalent matrix is computed and the SVD is applied on
-it.
-
-The `compute_layer_sv()` function is the main function to compute the singular values of
-a given layer. It supports by default several kinds of layers (Conv2D, Dense, Add,
-BatchNormalization, ReLU, Activation, and deel-lip layers). For other layers, the
-user can provide a supplementary_type2sv dictionary linking a new layer type with a
-user-defined function to compute the singular values.
-
-The function `compute_model_sv()` computes the singular values of all layers in a model.
-It returns a dictionary indicating for each layer name a tuple (min sv, max sv).
+# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier Toulouse III -
+# All rights reserved. DEEL is a research program operated by IVADO, IRT Saint Exupéry,
+# CRIAQ and ANITI - https://www.deel.ai/
+# =====================================================================================
 """
+Singular value utilities for PyTorch modules.
+"""
+from __future__ import annotations
 
-import numpy as np
-import tensorflow as tf
+from typing import Callable, Dict, Iterable, Optional, Tuple, Type
 
-from .layers import Condensable, GroupSort, MaxMin
-from .layers.unconstrained import PadConv2D
+import torch
+from torch import Tensor, nn
 
-
-def _compute_sv_dense(layer, input_sizes=None):
-    """Compute max and min singular values for a Dense layer.
-
-    The singular values are computed using the SVD decomposition of the weight matrix.
-
-    Args:
-        layer (tf.keras.Layer): the Dense layer.
-        input_sizes (tuple, optional): unused here.
-
-    Returns:
-        tuple: min and max singular values
-    """
-    weights = layer.get_weights()[0]
-    svd = np.linalg.svd(weights, compute_uv=False)
-    return (np.min(svd), np.max(svd))
+from .layers import Condensable, GroupSort, MaxMin, PadConv2D
 
 
-def _generate_conv_matrix(layer, input_sizes):
-    """Generate equivalent matrix for a convolutional layer.
+def _compute_sv_linear(layer: nn.Linear, *_):
+    weights = layer.weight
+    svd = torch.linalg.svdvals(weights)
+    return (svd.min().item(), svd.max().item())
 
-    The convolutional layer is converted to a dense layer by computing the equivalent
-    matrix. The equivalent matrix is computed by applying the convolutional layer on a
-    dirac input.
 
-    Args:
-        layer (tf.keras.Layer): the convolutional layer to convert to dense.
-        input_sizes (tuple): the input shape of the layer (with batch dimension as first
-            element).
+def _generate_conv_matrix(layer: nn.Module, input_shape: Tuple[int, ...]) -> Tensor:
+    # input_shape assumed NCHW with batch dimension first.
+    batch, channels, height, width = input_shape
+    in_dim = channels * height * width
+    device = next(layer.parameters()).device
+    dtype = next(layer.parameters()).dtype
 
-    Returns:
-        np.array: the equivalent matrix of the convolutional layer.
-    """
-    single_layer_model = tf.keras.models.Sequential(
-        [tf.keras.layers.Input(input_sizes[1:]), layer]
+    basis = torch.eye(in_dim, device=device, dtype=dtype).view(
+        in_dim, channels, height, width
     )
-    dirac_inp = np.zeros((input_sizes[2],) + input_sizes[1:])  # Line by line generation
-    in_size = input_sizes[1] * input_sizes[2]
-    channel_in = input_sizes[-1]
-    w_eqmatrix = None
-    start_index = 0
-    for ch in range(channel_in):
-        for ii in range(input_sizes[1]):
-            dirac_inp[:, ii, :, ch] = np.eye(input_sizes[2])
-            out_pred = single_layer_model(dirac_inp)
-            if w_eqmatrix is None:
-                w_eqmatrix = np.zeros(
-                    (in_size * channel_in, np.prod(out_pred.shape[1:]))
-                )
-            w_eqmatrix[start_index : (start_index + input_sizes[2]), :] = tf.reshape(
-                out_pred, (input_sizes[2], -1)
-            )
-            dirac_inp = 0.0 * dirac_inp
-            start_index += input_sizes[2]
-    return w_eqmatrix
+    with torch.no_grad():
+        outputs = layer(basis)
+    return outputs.reshape(in_dim, -1)
 
 
-def _compute_sv_conv2d_layer(layer, input_sizes):
-    """Compute max and min singular values for any convolutional layer.
-
-    The convolutional layer is converted to a dense layer by computing the equivalent
-    matrix. The equivalent matrix is computed by applying the convolutional layer on a
-    dirac input. The singular values are then computed using the SVD decomposition of
-    the weight matrix.
-
-    Args:
-        layer (tf.keras.Layer): the convolutional layer.
-        input_sizes (tuple): the input shape of the layer (with batch dimension as first
-            element).
-
-    Returns:
-        tuple: min and max singular values
-    """
-    w_eqmatrix = _generate_conv_matrix(layer, input_sizes)
-    svd = np.linalg.svd(w_eqmatrix, compute_uv=False)
-    return (np.min(svd), np.max(svd))
-
-
-def _compute_sv_activation(layer, input_sizes=None):
-    """Compute min and max gradient norm for activation.
-
-    Warning: This is not singular values for non-linear functions but gradient norm.
-    """
-    if isinstance(layer, tf.keras.layers.Activation):
-        function2SV = {tf.keras.activations.relu: (0, 1)}
-        if layer.activation in function2SV.keys():
-            return function2SV[layer.activation]
-        else:
-            return (None, None)
-    layer2SV = {
-        tf.keras.layers.ReLU: (0, 1),
-        GroupSort: (1, 1),
-        MaxMin: (1, 1),
-    }
-    if layer in layer2SV.keys():
-        return layer2SV[layer.activation]
-    else:
+def _compute_sv_conv(layer: nn.Module, input_shape: Tuple[int, ...]):
+    if input_shape is None:
         return (None, None)
+    matrix = _generate_conv_matrix(layer, input_shape)
+    svd = torch.linalg.svdvals(matrix)
+    return (svd.min().item(), svd.max().item())
 
 
-def _compute_sv_add(layer, input_sizes):
-    """Compute min and max singular values of Add layer."""
-    assert isinstance(input_sizes, list)
-    return (len(input_sizes) * 1.0, len(input_sizes) * 1.0)
+def _compute_sv_activation(layer: nn.Module, *_):
+    if isinstance(layer, nn.ReLU):
+        return (0.0, 1.0)
+    if isinstance(layer, (GroupSort, MaxMin)):
+        return (1.0, 1.0)
+    return (None, None)
 
 
-def _compute_sv_bn(layer, input_sizes=None):
-    """Compute min and max singular values of BatchNormalization layer."""
-    values = np.abs(
-        layer.gamma.numpy() / np.sqrt(layer.moving_variance.numpy() + layer.epsilon)
-    )
-    return (np.min(values), np.max(values))
+def _compute_sv_add(layer: nn.Module, input_sizes):
+    if not isinstance(input_sizes, Iterable):
+        return (None, None)
+    count = len(list(input_sizes))
+    return (float(count), float(count))
 
 
-def compute_layer_sv(layer, supplementary_type2sv={}):
+def compute_layer_sv(
+    layer: nn.Module,
+    input_shape: Optional[Tuple[int, ...]] = None,
+    supplementary_type2sv: Optional[Dict[Type[nn.Module], Callable[[nn.Module, Optional[Tuple[int, ...]]], Tuple[Optional[float], Optional[float]]]]] = None,
+):
     """
-    Compute the largest and lowest singular values (or upper and lower bounds)
-    of a given layer.
-
-    In case of Condensable layers, a vanilla_export is applied to the layer
-    to get the weights.
-    Support by default several kind of layers (Conv2D,Dense,Add, BatchNormalization,
-    ReLU, Activation, and deel-lip layers)
-
-    Args:
-        layer (tf.keras.layers.Layer): a single tf.keras.layer
-        supplementary_type2sv (dict, optional): a dictionary linking new layer type with
-            user-defined function to compute the singular values. Defaults to {}.
-    Returns:
-        tuple: a 2-tuple with lowest and largest singular values.
+    Compute min and max singular values (or bounds) of a torch module.
     """
-    default_type2sv = {
-        tf.keras.layers.Conv2D: _compute_sv_conv2d_layer,
-        tf.keras.layers.Conv2DTranspose: _compute_sv_conv2d_layer,
-        PadConv2D: _compute_sv_conv2d_layer,
-        tf.keras.layers.Dense: _compute_sv_dense,
-        tf.keras.layers.ReLU: _compute_sv_activation,
-        tf.keras.layers.Activation: _compute_sv_activation,
-        GroupSort: _compute_sv_activation,
-        MaxMin: _compute_sv_activation,
-        tf.keras.layers.Add: _compute_sv_add,
-        tf.keras.layers.BatchNormalization: _compute_sv_bn,
-    }
-    input_shape = layer.input_shape
+    supplementary_type2sv = supplementary_type2sv or {}
+
     if isinstance(layer, Condensable):
         layer.condense()
         layer = layer.vanilla_export()
-    if type(layer) in default_type2sv.keys():
-        return default_type2sv[type(layer)](layer, input_shape)
-    elif type(layer) in supplementary_type2sv.keys():
-        return supplementary_type2sv[type(layer)](layer, input_shape)
-    else:
-        return (None, None)
+
+    default_type2sv = {
+        nn.Linear: _compute_sv_linear,
+        nn.Conv2d: _compute_sv_conv,
+        nn.ConvTranspose2d: _compute_sv_conv,
+        PadConv2D: _compute_sv_conv,
+        nn.ReLU: _compute_sv_activation,
+        nn.Sigmoid: lambda *_: (0.0, 0.25),
+        nn.Tanh: lambda *_: (0.0, 1.0),
+        GroupSort: _compute_sv_activation,
+        MaxMin: _compute_sv_activation,
+    }
+
+    layer_type = type(layer)
+    if layer_type in supplementary_type2sv:
+        return supplementary_type2sv[layer_type](layer, input_shape)
+    if layer_type in default_type2sv:
+        return default_type2sv[layer_type](layer, input_shape)
+    return (None, None)
 
 
-def compute_model_sv(model, supplementary_type2sv={}):
-    """Compute the largest and lowest singular values of all layers in a model.
+def compute_model_sv(
+    model: nn.Module,
+    input_shape: Optional[Tuple[int, ...]] = None,
+    supplementary_type2sv: Optional[Dict[Type[nn.Module], Callable[[nn.Module, Optional[Tuple[int, ...]]], Tuple[Optional[float], Optional[float]]]]] = None,
+):
+    """Compute singular values for each child module in a model."""
+    results = []
+    for name, module in model.named_children():
+        result = compute_layer_sv(
+            module, input_shape=input_shape, supplementary_type2sv=supplementary_type2sv
+        )
+        results.append((name, result))
+    return results
 
-    Args:
-        model (tf.keras.Model): a tf.keras Model or Sequential.
-        supplementary_type2sv (dict, optional): a dictionary linking new layer type
-            with user defined function to compute the min and max singular values.
 
-    Returns:
-        dict: A dictionary indicating for each layer name a tuple (min sv, max sv)
-    """
-    list_sv = []
-    for layer in model.layers:
-        if isinstance(layer, tf.keras.Model):
-            list_sv.append((layer.name, (None, None)))
-            list_sv += compute_model_sv(layer, supplementary_type2sv)
-        else:
-            list_sv.append((layer.name, compute_layer_sv(layer, supplementary_type2sv)))
-    return list_sv
+__all__ = ["compute_layer_sv", "compute_model_sv"]

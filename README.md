@@ -79,9 +79,9 @@ You can install ``deel-lip`` directly from pypi:
 pip install deel-lip
 ```
 
-In order to use ``deel-lip``, you also need a [valid tensorflow
-installation](https://www.tensorflow.org/install). ``deel-lip``
-supports tensorflow versions 2.x.
+In order to use ``deel-lip``, you also need a [valid PyTorch
+installation](https://pytorch.org/get-started/locally/). ``deel-lip``
+supports PyTorch versions 2.x.
 
 ## 🔥 Tutorials
 

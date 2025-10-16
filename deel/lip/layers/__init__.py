@@ -21,14 +21,24 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 """
-The submodule `deel.lip.layers` contains all custom Keras layers to build
-Lipschitz-constrained neural networks. They all inherit from `keras.layers.Layer` from
-Keras API.
+PyTorch layers implementing Lipschitz-constrained building blocks.
 """
-from . import unconstrained
-from .activations import FullSort, GroupSort, GroupSort2, Householder, MaxMin, PReLUlip
+from .unconstrained import PadConv2D
+from .activations import (
+    FullSort,
+    GroupSort,
+    GroupSort2,
+    Householder,
+    MaxMin,
+    PReLUlip,
+)
 from .base_layer import Condensable, LipschitzLayer
-from .convolutional import FrobeniusConv2D, SpectralConv2D, SpectralConv2DTranspose
+from .convolutional import (
+    FrobeniusConv2D,
+    FrobeniusConv2DTranspose,
+    SpectralConv2D,
+    SpectralConv2DTranspose,
+)
 from .dense import FrobeniusDense, SpectralDense
 from .pooling import (
     InvertibleDownSampling,

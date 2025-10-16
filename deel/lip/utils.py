@@ -1,141 +1,174 @@
-# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier Toulouse III - All
-# rights reserved. DEEL is a research program operated by IVADO, IRT Saint Exupéry,
-# CRIAQ and ANITI - https://www.deel.ai/
+# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier
+# Toulouse III - All rights reserved. DEEL is a research program operated by
+# IVADO, IRT Saint Exupéry, CRIAQ and ANITI - https://www.deel.ai/
 # =====================================================================================
 """
-Contains utility functions.
+Contains utility functions implemented with PyTorch tensors.
 """
-from typing import Generator, Tuple, Any
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras import Model
+from __future__ import annotations
+
+from typing import Any, Generator, Iterable, Tuple
+
+import torch
+from torch import Tensor, nn
+
+
+def _infer_device_and_dtype(model: nn.Module) -> Tuple[torch.device, torch.dtype]:
+    """
+    Infer default device and dtype from a module. If the module does not own any
+    parameters, defaults to CPU / float32.
+    """
+    try:
+        parameter = next(model.parameters())
+        return parameter.device, parameter.dtype
+    except StopIteration:
+        buffer = next(model.buffers(), None)
+        if buffer is not None:
+            return buffer.device, buffer.dtype
+    return torch.device("cpu"), torch.float32
 
 
 def evaluate_lip_const_gen(
-    model: Model, generator: Generator[Tuple[np.ndarray, np.ndarray], Any, None]
-):
+    model: nn.Module,
+    generator: Generator[Tuple[Iterable[Any], Iterable[Any]], Any, None],
+) -> Tensor:
     """
-    Evaluate the Lipschitz constant of a model, using the Jacobian of the model.
-    Please note that the estimation of the Lipschitz constant is done locally around
-    input samples. This may not correctly estimate the behaviour in the whole domain.
-    The computation might also be inaccurate in high dimensional space.
-
-    This is the generator version of evaluate_lip_const.
-
-    Args:
-        model: built keras model used to make predictions
-        generator: used to select datapoints where to compute the lipschitz constant
-
-    Returns:
-        float: the empirically evaluated lipschitz constant.
-
+    Evaluate the Lipschitz constant of a model on the first batch yielded by a
+    generator.
     """
-    x, _ = generator.send(None)
+    try:
+        batch = generator.send(None)
+    except (AttributeError, TypeError):
+        batch = next(generator)
+    x, _ = batch
     return evaluate_lip_const(model, x)
 
 
-def evaluate_lip_const(model: Model, x):
+def _prepare_input(model: nn.Module, x: Any) -> Tensor:
+    device, dtype = _infer_device_and_dtype(model)
+    x_tensor = torch.as_tensor(x, dtype=dtype, device=device)
+    if x_tensor.dim() == 1:
+        x_tensor = x_tensor.unsqueeze(0)
+    return x_tensor
+
+
+def evaluate_lip_const(model: nn.Module, x: Any) -> Tensor:
     """
     Evaluate the Lipschitz constant of a model, using the Jacobian of the model.
-    Please note that the estimation of the lipschitz constant is done locally around
-    input samples. This may not correctly estimate the behaviour in the whole domain.
-
-    Args:
-        model: built keras model used to make predictions
-        x: inputs used to compute the lipschitz constant
-
-    Returns:
-        float: the empirically evaluated Lipschitz constant. The computation might also
-            be inaccurate in high dimensional space.
-
+    Note that the estimation of the Lipschitz constant is done locally around input
+    samples and may not capture the behaviour on the entire domain.
     """
-    batch_size = x.shape[0]
-    x = tf.constant(x, dtype=model.input.dtype)
+    model_was_training = model.training
+    model.eval()
 
-    # Get the jacobians of the model w.r.t. the inputs
-    with tf.GradientTape() as tape:
-        tape.watch(x)
-        y_pred = model(x, training=False)
-    batch_jacobian = tape.batch_jacobian(y_pred, x)
+    x_tensor = _prepare_input(model, x)
+    batch_size = x_tensor.shape[0]
 
-    # Reshape the jacobians (in case of multi-dimensional input/output like in conv)
-    xdim = tf.reduce_prod(x.shape[1:])
-    ydim = tf.reduce_prod(y_pred.shape[1:])
-    batch_jacobian = tf.reshape(batch_jacobian, (batch_size, ydim, xdim))
+    x_tensor = x_tensor.requires_grad_(True)
+    outputs = model(x_tensor)
 
-    # Compute the spectral norm of the jacobians and return the maximum
-    b = tf.norm(batch_jacobian, ord=2, axis=[-2, -1]).numpy()
-    return tf.reduce_max(b)
+    input_dim = int(torch.prod(torch.tensor(x_tensor.shape[1:], device=x_tensor.device)))
+    output_dim = int(torch.prod(torch.tensor(outputs.shape[1:], device=outputs.device)))
+
+    jacobian_norms = []
+    for sample_id in range(batch_size):
+        input_sample = x_tensor[sample_id : sample_id + 1]
+
+        def model_fn(inp: Tensor) -> Tensor:
+            return model(inp).reshape(-1)
+
+        jacobian = torch.autograd.functional.jacobian(
+            model_fn,
+            input_sample,
+            create_graph=False,
+            vectorize=False,
+        )
+        jacobian = jacobian.reshape(output_dim, input_dim)
+        sigma_max = torch.linalg.svdvals(jacobian).max()
+        jacobian_norms.append(sigma_max)
+
+    lip_const = torch.stack(jacobian_norms).max()
+    if model_was_training:
+        model.train()
+    return lip_const.detach()
 
 
-def _padding_circular(x, circular_paddings):
-    """Add circular padding to a 4-D tensor. Only channels_last is supported."""
+def _padding_circular(x: Tensor, circular_paddings: Tuple[int, int] | None) -> Tensor:
+    """Add circular padding to a 4-D tensor (NCHW data format)."""
     if circular_paddings is None:
         return x
-    w_pad, h_pad = circular_paddings
-    if w_pad > 0:
-        x = tf.concat((x[:, -w_pad:, :, :], x, x[:, :w_pad, :, :]), axis=1)
-    if h_pad > 0:
-        x = tf.concat((x[:, :, -h_pad:, :], x, x[:, :, :h_pad, :]), axis=2)
+    pad_h, pad_w = circular_paddings
+    if pad_h > 0:
+        x = torch.cat((x[:, :, -pad_h:, :], x, x[:, :, :pad_h, :]), dim=2)
+    if pad_w > 0:
+        x = torch.cat((x[:, :, :, -pad_w:], x, x[:, :, :, :pad_w]), dim=3)
     return x
 
 
-def _zero_upscale2D(x, strides):
-    stride_v = strides[0] * strides[1]
-    if stride_v == 1:
+def _zero_upscale2D(x: Tensor, strides: Tuple[int, int]) -> Tensor:
+    """
+    Insert zeros between elements according to an (stride_h, stride_w) tuple for
+    4-D tensors in NCHW format.
+    """
+    stride_h, stride_w = strides
+    if stride_h == 1 and stride_w == 1:
         return x
-    output_shape = x.get_shape().as_list()[1:]
-    if strides[1] > 1:
-        output_shape[1] *= strides[1]
-        x = tf.expand_dims(x, 3)
-        fillz = tf.zeros_like(x)
-        fillz = tf.tile(fillz, [1, 1, 1, strides[1] - 1, 1])
-        x = tf.concat((x, fillz), axis=3)
-        x = tf.reshape(x, (-1,) + tuple(output_shape))
-    if strides[0] > 1:
-        output_shape[0] *= strides[0]
-        x = tf.expand_dims(x, 2)
-        fillz = tf.zeros_like(x)
-        fillz = tf.tile(fillz, [1, 1, strides[0] - 1, 1, 1])
-        x = tf.concat((x, fillz), axis=2)
-        x = tf.reshape(x, (-1,) + tuple(output_shape))
+
+    batch, channels, height, width = x.shape
+    device, dtype = x.device, x.dtype
+
+    if stride_w > 1:
+        x = x.unsqueeze(-1)
+        zeros = torch.zeros(
+            (batch, channels, height, width, stride_w - 1), device=device, dtype=dtype
+        )
+        x = torch.cat((x, zeros), dim=-1)
+        x = x.reshape(batch, channels, height, width * stride_w)
+
+    if stride_h > 1:
+        x = x.unsqueeze(3)
+        zeros = torch.zeros(
+            (batch, channels, height, stride_h - 1, width * stride_w),
+            device=device,
+            dtype=dtype,
+        )
+        x = torch.cat((x, zeros), dim=3)
+        x = x.reshape(batch, channels, height * stride_h, width * stride_w)
+
     return x
 
 
-def _maybe_transpose_kernel(w, transpose=False):
-    """Transpose 4-D kernel: permutation of axes 2 and 3 + reverse axes 0 and 1."""
+def _maybe_transpose_kernel(w: Tensor, transpose: bool = False) -> Tensor:
+    """Transpose 4-D convolution kernel from OIHW to IOHW with spatial flip."""
     if not transpose:
         return w
-    w_adj = tf.transpose(w, perm=[0, 1, 3, 2])
-    w_adj = w_adj[::-1, ::-1, :]
+    w_adj = w.permute(1, 0, 2, 3)
+    w_adj = torch.flip(w_adj, dims=(2, 3))
     return w_adj
 
 
-@tf.function
-def process_labels_for_multi_gpu(labels):
-    """Process labels to be fed to any loss based on KR estimation with a multi-GPU/TPU
-    strategy.
-
-    When using a multi-GPU/TPU strategy, the flag `multi_gpu` in KR-based losses must be
-    set to True and the labels have to be pre-processed with this function.
-
-    For binary classification, the labels should be of shape [batch_size, 1].
-    For multiclass problems, the labels must be one-hot encoded (1 or 0) with shape
-    [batch_size, number of classes].
-
-    Args:
-        labels (tf.Tensor): tensor containing the labels
-
-    Returns:
-        tf.Tensor: labels processed for KR-based losses with multi-GPU/TPU strategy.
-    """
+def process_labels_for_multi_gpu(labels: Tensor) -> Tensor:
+    """Process labels to be fed to any loss based on KR estimation with a
+    multi-GPU/TPU strategy."""
     eps = 1e-7
-    labels = tf.cast(tf.where(labels > 0, 1, 0), labels.dtype)
-    batch_size = tf.cast(tf.shape(labels)[0], labels.dtype)
-    counts = tf.reduce_sum(labels, axis=0)
+    dtype = labels.dtype if labels.is_floating_point() else torch.float32
+    labels = labels.to(dtype=dtype)
+    labels = torch.where(labels > 0, torch.ones_like(labels), torch.zeros_like(labels))
+
+    batch_size = labels.shape[0]
+    counts = labels.sum(dim=0)
 
     pos = labels / (counts + eps)
-    neg = (1 - labels) / (batch_size - counts + eps)
-    # Since element-wise KR terms are averaged by loss reduction later on, it is needed
-    # to multiply by batch_size here.
+    neg = (1.0 - labels) / (batch_size - counts + eps)
+
     return batch_size * (pos - neg)
+
+
+__all__ = [
+    "evaluate_lip_const_gen",
+    "evaluate_lip_const",
+    "_padding_circular",
+    "_zero_upscale2D",
+    "_maybe_transpose_kernel",
+    "process_labels_for_multi_gpu",
+]

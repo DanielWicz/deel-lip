@@ -1,170 +1,207 @@
 # -*- coding: utf-8 -*-
-# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier Toulouse III - All
-# rights reserved. DEEL is a research program operated by IVADO, IRT Saint Exupéry,
+# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier Toulouse III -
+# All rights reserved. DEEL is a research program operated by IVADO, IRT Saint Exupéry,
 # CRIAQ and ANITI - https://www.deel.ai/
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# =====================================================================================
 """
-This module contains custom Keras unconstrained layers.
+Unconstrained building blocks implemented with PyTorch.
+"""
+from __future__ import annotations
 
-Compared to other files in `layers` folder, the layers defined here are not
-Lipschitz-constrained. They are base classes for more advanced layers. Do not use these
-layers as is, since they are not Lipschitz constrained.
-"""
-import tensorflow as tf
-from tensorflow.keras.utils import register_keras_serializable
+import math
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
 
 from ..utils import _padding_circular
 from .base_layer import Condensable
+from .convolutional import _apply_same_padding
+from .dense import _resolve_activation, _resolve_bias_initializer
 
 
-@register_keras_serializable("deel-lip", "PadConv2D")
-class PadConv2D(tf.keras.layers.Conv2D, Condensable):
+def _to_2tuple(value: int | Sequence[int]) -> Tuple[int, int]:
+    if isinstance(value, Sequence):
+        value = tuple(value)
+        if len(value) != 2:
+            raise ValueError("Expected tuple of length 2.")
+        return int(value[0]), int(value[1])
+    return int(value), int(value)
+
+
+class PadConv2D(nn.Module, Condensable):
+    """
+    Convolution layer with configurable padding modes beyond PyTorch defaults.
+    This layer does not enforce Lipschitz constraints and primarily serves as a
+    building block for constrained modules.
+    """
+
+    SUPPORTED_PADDING = {
+        "same",
+        "valid",
+        "constant",
+        "symmetric",
+        "reflect",
+        "circular",
+        "replicate",
+    }
+
     def __init__(
         self,
-        filters,
-        kernel_size,
-        strides=(1, 1),
-        padding="same",
-        data_format=None,
-        dilation_rate=(1, 1),
-        activation=None,
-        use_bias=True,
-        kernel_initializer="glorot_uniform",
-        bias_initializer="zeros",
-        kernel_regularizer=None,
-        bias_regularizer=None,
-        activity_regularizer=None,
-        kernel_constraint=None,
-        bias_constraint=None,
-        **kwargs
-    ):
-        """
-        This class is a Conv2D Layer with parameterized padding.
-        Since Conv2D layer only supports `"same"` and `"valid"` padding, this layer will
-        enable other type of padding, such as `"constant"`, `"symmetric"`, `"reflect"`
-        or `"circular"`.
+        filters: int,
+        kernel_size: int | Sequence[int],
+        strides: int | Sequence[int] = (1, 1),
+        padding: str = "same",
+        data_format: Optional[str] = "channels_last",
+        dilation_rate: int | Sequence[int] = (1, 1),
+        activation: Optional[Callable | str] = None,
+        use_bias: bool = True,
+        kernel_initializer: Optional[Callable] = None,
+        bias_initializer: Callable | str = "zeros",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        if padding.lower() not in self.SUPPORTED_PADDING:
+            raise ValueError(f"Unsupported padding: {padding}")
+        if data_format not in {"channels_last", "channels_first"}:
+            raise ValueError("data_format must be 'channels_last' or 'channels_first'.")
 
-        Warning:
-            The PadConv2D is not a Lipschitz layer and must not be directly used. This
-            must be used as a base class to create a Lipschitz layer with padding.
+        self.out_channels = int(filters)
+        self.kernel_size = _to_2tuple(kernel_size)
+        self.stride = _to_2tuple(strides)
+        self.dilation = _to_2tuple(dilation_rate)
+        self.padding = padding.lower()
+        self.data_format = data_format
+        self.use_bias = use_bias
+        self.kernel_initializer = kernel_initializer
+        self.bias_initializer = _resolve_bias_initializer(bias_initializer)
+        self.activation_fn, self.activation_name = _resolve_activation(activation)
+        self.padding_value = kwargs.pop("padding_value", 0.0)
 
-        All arguments are the same as the original `Conv2D` except the `padding`
-        which is defined as following:
-
-        Args:
-            padding: one of `"same"`, `"valid"` `"constant"`, `"symmetric"`,
-                `"reflect"` or `"circular"` (case-insensitive).
-        """
-        self.pad = lambda x: x
-        self.old_padding = padding
-        self.internal_input_shape = None
-        if padding.lower() != "same":  # same is directly processed in Conv2D
-            padding = "valid"
-        super(PadConv2D, self).__init__(
-            filters=filters,
-            kernel_size=kernel_size,
-            strides=strides,
-            padding=padding,
-            data_format=data_format,
-            dilation_rate=dilation_rate,
-            activation=activation,
-            use_bias=use_bias,
-            kernel_initializer=kernel_initializer,
-            bias_initializer=bias_initializer,
-            kernel_regularizer=kernel_regularizer,
-            bias_regularizer=bias_regularizer,
-            activity_regularizer=activity_regularizer,
-            kernel_constraint=kernel_constraint,
-            bias_constraint=bias_constraint,
-            **kwargs
-        )
+        self.conv: Optional[nn.Conv2d] = None
+        self.in_channels: Optional[int] = None
+        self.built = False
         self._kwargs = kwargs
-        if self.old_padding.lower() in ["same", "valid"]:
-            self.pad = lambda x: x
-            self.padding_size = [0, 0]
-        if self.old_padding.lower() in ["constant", "reflect", "symmetric"]:
-            self.padding_size = [self.kernel_size[0] // 2, self.kernel_size[1] // 2]
-            paddings = [
-                [0, 0],
-                [self.padding_size[0], self.padding_size[0]],
-                [self.padding_size[1], self.padding_size[1]],
-                [0, 0],
-            ]
-            self.pad = lambda t: tf.pad(t, paddings, self.old_padding)
-        if self.old_padding.lower() == "circular":
-            self.padding_size = [self.kernel_size[0] // 2, self.kernel_size[1] // 2]
-            self.pad = lambda t: _padding_circular(t, self.padding_size)
 
-    def _compute_padded_shape(self, input_shape, padding_size):
-        if isinstance(input_shape, tf.TensorShape):
-            internal_input_shape = input_shape.as_list()
+    def _maybe_build(self, x: Tensor) -> None:
+        if self.built:
+            return
+        if self.data_format == "channels_last":
+            in_channels = x.shape[-1]
         else:
-            internal_input_shape = list(input_shape)
+            in_channels = x.shape[1]
+        self.in_channels = in_channels
 
-        first_spatial_dim = 1 if self.data_format == "channels_last" else 2
-        for index, pad in enumerate(padding_size):
-            internal_input_shape[first_spatial_dim + index] += 2 * pad
-        return tf.TensorShape(internal_input_shape)
+        device, dtype = x.device, x.dtype
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=self.out_channels,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=0,
+            dilation=self.dilation,
+            bias=self.use_bias,
+        ).to(device=device, dtype=dtype)
 
-    def build(self, input_shape):
-        self.internal_input_shape = self._compute_padded_shape(
-            input_shape, self.padding_size
-        )
-        super(PadConv2D, self).build(self.internal_input_shape)
+        if self.kernel_initializer is not None:
+            weight = self.kernel_initializer(
+                (*self.kernel_size, in_channels, self.out_channels),
+                dtype=dtype,
+                device=device,
+            )
+            weight = weight.permute(3, 2, 0, 1).contiguous()
+            with torch.no_grad():
+                self.conv.weight.copy_(weight)
+        else:
+            nn.init.kaiming_uniform_(self.conv.weight, a=math.sqrt(5))
+        if self.use_bias and self.conv.bias is not None:
+            bias = self.bias_initializer((self.out_channels,), device=device, dtype=dtype)
+            with torch.no_grad():
+                self.conv.bias.copy_(bias)
 
-    def compute_output_shape(self, input_shape):
-        return super(PadConv2D, self).compute_output_shape(self.internal_input_shape)
+        self.built = True
 
-    def call(self, x):
-        x = self.pad(x)
-        return super(PadConv2D, self).call(x)
+    def _apply_custom_padding(self, x: Tensor) -> Tensor:
+        kh, kw = self.kernel_size
+        pad_h, pad_w = kh // 2, kw // 2
+        padding = (pad_w, pad_w, pad_h, pad_h)
+        if self.padding == "constant":
+            return F.pad(x, padding, mode="constant", value=self.padding_value)
+        if self.padding == "reflect":
+            return F.pad(x, padding, mode="reflect")
+        if self.padding == "replicate":
+            return F.pad(x, padding, mode="replicate")
+        if self.padding == "symmetric":
+            # Approximate symmetric padding via replicate padding which preserves boundary values.
+            return F.pad(x, padding, mode="replicate")
+        if self.padding == "circular":
+            return _padding_circular(x, (pad_h, pad_w))
+        raise ValueError(f"Unsupported padding mode: {self.padding}")
 
-    def get_config(self):
-        base_config = super(PadConv2D, self).get_config()
-        base_config["padding"] = self.old_padding
-        return base_config
+    def _pad_input(self, x: Tensor) -> Tensor:
+        if self.padding == "valid":
+            return x
+        if self.padding == "same":
+            return _apply_same_padding(x, self.kernel_size, self.stride, self.dilation)
+        return self._apply_custom_padding(x)
+
+    def forward(self, x: Tensor) -> Tensor:
+        self._maybe_build(x)
+        if self.data_format == "channels_last":
+            x = x.permute(0, 3, 1, 2)
+        x = self._pad_input(x)
+        output = self.conv(x)
+        if self.data_format == "channels_last":
+            output = output.permute(0, 2, 3, 1)
+        return self.activation_fn(output)
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "filters": self.out_channels,
+            "kernel_size": self.kernel_size,
+            "strides": self.stride,
+            "padding": self.padding,
+            "data_format": self.data_format,
+            "dilation_rate": self.dilation,
+            "activation": self.activation_name,
+            "use_bias": self.use_bias,
+        }
 
     def condense(self):
         return
 
     def vanilla_export(self):
-        self._kwargs["name"] = self.name
-        if self.old_padding.lower() in ["same", "valid"]:
-            layer_type = tf.keras.layers.Conv2D
-        else:
-            layer_type = PadConv2D
-        layer = layer_type(
-            filters=self.filters,
+        if not self.built:
+            raise RuntimeError("Layer must be built before calling vanilla_export().")
+        exported = PadConv2D(
+            filters=self.out_channels,
             kernel_size=self.kernel_size,
-            strides=self.strides,
-            padding=self.old_padding,
+            strides=self.stride,
+            padding=self.padding,
             data_format=self.data_format,
-            dilation_rate=self.dilation_rate,
-            activation=self.activation,
+            dilation_rate=self.dilation,
+            activation=self.activation_fn,
             use_bias=self.use_bias,
-            kernel_initializer="glorot_uniform",
-            bias_initializer="zeros",
-            **self._kwargs
+            kernel_initializer=self.kernel_initializer,
+            bias_initializer=self.bias_initializer,
+            **self._kwargs,
         )
-        layer.build(self.input_shape)
-        layer.kernel.assign(self.kernel)
-        if self.use_bias:
-            layer.bias.assign(self.bias)
-        return layer
+        if self.data_format == "channels_last":
+            dummy = torch.zeros(
+                (1, 2, 2, self.in_channels),
+                device=self.conv.weight.device,
+                dtype=self.conv.weight.dtype,
+            )
+        else:
+            dummy = torch.zeros(
+                (1, self.in_channels, 2, 2),
+                device=self.conv.weight.device,
+                dtype=self.conv.weight.dtype,
+            )
+        exported._maybe_build(dummy)
+        exported.load_state_dict(self.state_dict())
+        return exported
+
+
+__all__ = ["PadConv2D"]

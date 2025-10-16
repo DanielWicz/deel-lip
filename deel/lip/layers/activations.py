@@ -1,292 +1,201 @@
-# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier Toulouse III - All
-# rights reserved. DEEL is a research program operated by IVADO, IRT Saint Exupéry,
-# CRIAQ and ANITI - https://www.deel.ai/
+# Copyright IRT Antoine de Saint Exupéry et Université Paul Sabatier
+# Toulouse III - All rights reserved. DEEL is a research program operated by
+# IVADO, IRT Saint Exupéry, CRIAQ and ANITI - https://www.deel.ai/
 # =====================================================================================
 """
-This module contains extra activation functions which respect the Lipschitz constant.
-It can be added as a layer, or it can be used in the "activation" params for other
-layers.
+PyTorch implementations of Lipschitz-respecting activation modules.
 """
+from __future__ import annotations
+
 import math
-import tensorflow as tf
-from tensorflow.keras import backend as K
-from tensorflow.keras.constraints import MinMaxNorm
-from tensorflow.keras.layers import Layer, PReLU
+from typing import Callable, Optional, Tuple
+
+import torch
+from torch import Tensor, nn
+
 from .base_layer import LipschitzLayer
-from tensorflow.keras.utils import register_keras_serializable
 
 
-@register_keras_serializable("deel-lip", "MaxMin")
-class MaxMin(Layer, LipschitzLayer):
-    def __init__(self, data_format="channels_last", k_coef_lip=1.0, **kwargs):
-        """
-        MaxMin activation [Relu(x),reLU(-x)]
+def _resolve_channel_axis(axis: int, ndim: int) -> int:
+    if axis < 0:
+        axis = ndim + axis
+    if axis < 0 or axis >= ndim:
+        raise ValueError("Invalid channel axis.")
+    return axis
 
-        Args:
-            data_format (str): either channels_first or channels_last
-            k_coef_lip (float): the lipschitz coefficient to be enforced
-            **kwargs: params passed to layers (named fashion)
 
-        Input shape:
-            Arbitrary. Use the keyword argument `input_shape` (tuple of integers, does
-            not include the samples axis) when using this layer as the first layer in a
-            model.
-
-        Output shape:
-            Double channel size as input.
-
-        References:
-            ([M. Blot, M. Cord, et N. Thome, « Max-min convolutional neural networks
-            for image classification », in 2016 IEEE International Conference on Image
-            Processing (ICIP), Phoenix, AZ, USA, 2016, p. 3678‑3682.)
-
-        """
+class _BaseActivation(nn.Module, LipschitzLayer):
+    def __init__(self, k_coef_lip: float = 1.0) -> None:
+        super().__init__()
         self.set_klip_factor(k_coef_lip)
-        super(MaxMin, self).__init__(**kwargs)
-        if data_format == "channels_last":
-            self.channel_axis = -1
-        elif data_format == "channels_first":
-            self.channel_axis = 1
-        else:
-            raise RuntimeError("data format not understood")
+        self._built = False
+
+    def _ensure_built(self, input_shape: torch.Size) -> None:
+        if not self._built:
+            self._init_lip_coef(input_shape)
+            self._built = True
+
+
+class MaxMin(_BaseActivation):
+    def __init__(self, data_format: str = "channels_last", k_coef_lip: float = 1.0):
+        super().__init__(k_coef_lip=k_coef_lip)
+        if data_format not in {"channels_last", "channels_first"}:
+            raise ValueError("data_format must be 'channels_last' or 'channels_first'.")
         self.data_format = data_format
+        self.channel_axis = -1 if data_format == "channels_last" else 1
 
-    def build(self, input_shape):
-        self._init_lip_coef(input_shape)
-        return super().build(input_shape)
-
-    def _compute_lip_coef(self, input_shape=None):
-        return 1.0
-
-    def call(self, x):
-        return (
-            K.concatenate(
-                (K.relu(x, alpha=0), K.relu(-x, alpha=0)), axis=self.channel_axis
-            )
-            * self._get_coef()
-        )
+    def forward(self, x: Tensor) -> Tensor:
+        self._ensure_built(x.shape)
+        pos = torch.relu(x)
+        neg = torch.relu(-x)
+        return torch.cat([pos, neg], dim=self.channel_axis) * self._get_coef()
 
     def get_config(self):
-        config = {
-            "data_format": self.data_format,
-            "k_coef_lip": self.k_coef_lip,
-        }
-        base_config = super(MaxMin, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    def compute_output_shape(self, input_shape):
-        new_shape = input_shape
-        new_shape[self.channel_axis] = 2 * new_shape[self.channel_axis]
-        return new_shape
+        return {"data_format": self.data_format, "k_coef_lip": self.k_coef_lip}
 
 
-@register_keras_serializable("deel-lip", "GroupSort")
-class GroupSort(Layer, LipschitzLayer):
-    def __init__(self, n=None, data_format="channels_last", k_coef_lip=1.0, **kwargs):
-        """
-        GroupSort activation
-
-        Args:
-            n (int): group size used when sorting. When None group size is set to input
-                size (fullSort behavior)
-            data_format (str): either channels_first or channels_last
-            k_coef_lip (float): the lipschitz coefficient to be enforced
-            **kwargs: params passed to layers (named fashion)
-
-        Input shape:
-            Arbitrary. Use the keyword argument `input_shape` (tuple of integers, does
-            not include the samples axis) when using this layer as the first layer in a
-            model.
-
-        Output shape:
-            Same size as input.
-
-        """
-        self.set_klip_factor(k_coef_lip)
-        super(GroupSort, self).__init__(**kwargs)
-        if data_format == "channels_last":
-            self.channel_axis = -1
-        elif data_format == "channels_first":
-            raise RuntimeError(
-                "channels_first not implemented for GroupSort activation"
-            )
-        else:
-            raise RuntimeError("data format not understood")
+class GroupSort(_BaseActivation):
+    def __init__(
+        self,
+        n: Optional[int] = None,
+        data_format: str = "channels_last",
+        k_coef_lip: float = 1.0,
+    ):
+        super().__init__(k_coef_lip=k_coef_lip)
+        if data_format not in {"channels_last", "channels_first"}:
+            raise ValueError("data_format must be 'channels_last' or 'channels_first'.")
+        if data_format == "channels_first":
+            raise RuntimeError("channels_first not implemented for GroupSort activation")
+        self.data_format = data_format
+        self.channel_axis = -1
         self.n = n
-        self.data_format = data_format
+        self._groups = None
 
-    def build(self, input_shape):
-        input_shape = tf.TensorShape(input_shape)
-        super(GroupSort, self).build(input_shape)
+    def _build(self, input_shape: torch.Size) -> None:
+        channel_axis = _resolve_channel_axis(self.channel_axis, len(input_shape))
+        channels = input_shape[channel_axis]
+        group_size = channels if (self.n is None or self.n > channels) else self.n
+        if channels % group_size != 0:
+            raise RuntimeError("Group size must divide the number of channels.")
+        self.n = group_size
+        self._groups = channels // self.n
+        self.channel_axis = channel_axis
+        self._built = True
         self._init_lip_coef(input_shape)
-        if (self.n is None) or (self.n > input_shape[self.channel_axis]):
-            self.n = input_shape[self.channel_axis]
-        if (input_shape[self.channel_axis] % self.n) != 0:
-            raise RuntimeError("self.n has to be a divisor of the number of channels")
-        input_shape = tuple(input_shape.as_list())
-        self.flat_shape = (
-            (-1,) + input_shape[1:-1] + (input_shape[-1] // self.n, self.n)
-        )
-        self.out_shape = (-1,) + input_shape[1:]
 
-    def _compute_lip_coef(self, input_shape=None):
-        return 1.0
-
-    @tf.function
-    def call(self, x):
-        fv = tf.reshape(x, self.flat_shape)
+    def forward(self, x: Tensor) -> Tensor:
+        if not self._built:
+            self._build(x.shape)
+        x_perm = torch.movedim(x, self.channel_axis, -1)
+        new_shape = x_perm.shape[:-1] + (self._groups, self.n)
+        grouped = x_perm.view(new_shape)
         if self.n == 2:
-            b, c = tf.split(fv, 2, -1)
-            newv = tf.concat([tf.minimum(b, c), tf.maximum(b, c)], axis=-1)
-            newv = tf.reshape(newv, self.out_shape)
-            return newv * self._get_coef()
-
-        newv = tf.sort(fv)
-        newv = tf.reshape(newv, self.out_shape)
-        return newv * self._get_coef()
+            a, b = grouped.unbind(-1)
+            mins = torch.minimum(a, b)
+            maxs = torch.maximum(a, b)
+            sorted_group = torch.stack((mins, maxs), dim=-1)
+        else:
+            sorted_group, _ = torch.sort(grouped, dim=-1)
+        sorted_flat = sorted_group.reshape(x_perm.shape)
+        output = torch.movedim(sorted_flat, -1, self.channel_axis)
+        return output * self._get_coef()
 
     def get_config(self):
-        config = {
-            "n": self.n,
-            "k_coef_lip": self.k_coef_lip,
-            "data_format": self.data_format,
-        }
-        base_config = super(GroupSort, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    def compute_output_shape(self, input_shape):
-        return input_shape
+        return {"n": self.n, "k_coef_lip": self.k_coef_lip, "data_format": self.data_format}
 
 
-@register_keras_serializable("deel-lip", "GroupSort2")
 class GroupSort2(GroupSort):
     def __init__(self, **kwargs):
-        """
-        GroupSort2 activation. Special case of GroupSort with group of size 2.
-
-        Input shape:
-            Arbitrary. Use the keyword argument `input_shape` (tuple of integers, does
-            not include the samples axis) when using this layer as the first layer in a
-            model.
-
-        Output shape:
-            Same size as input.
-
-        """
         kwargs["n"] = 2
         super().__init__(**kwargs)
 
 
-@register_keras_serializable("deel-lip", "FullSort")
 class FullSort(GroupSort):
     def __init__(self, **kwargs):
-        """
-        FullSort activation. Special case of GroupSort where the entire input is sorted.
-
-        Input shape:
-            Arbitrary. Use the keyword argument `input_shape` (tuple of integers, does
-            not include the samples axis) when using this layer as the first layer in a
-            model.
-
-        Output shape:
-            Same size as input.
-
-        """
         kwargs["n"] = None
         super().__init__(**kwargs)
 
 
-@register_keras_serializable("deel-lip", "PReLUlip")
-def PReLUlip(k_coef_lip=1.0):
-    """
-    PreLu activation, with Lipschitz constraint.
-
-    Args:
-        k_coef_lip (float): lipschitz coefficient to be enforced
-    """
-    return PReLU(
-        alpha_constraint=MinMaxNorm(min_value=-k_coef_lip, max_value=k_coef_lip)
-    )
-
-
-@register_keras_serializable("deel-lip", "Householder")
-class Householder(Layer, LipschitzLayer):
+class Householder(_BaseActivation):
     def __init__(
         self,
-        data_format="channels_last",
-        k_coef_lip=1.0,
-        theta_initializer=None,
-        **kwargs,
+        data_format: str = "channels_last",
+        k_coef_lip: float = 1.0,
+        theta_initializer: Optional[Callable[[Tuple[int]], Tensor]] = None,
     ):
-        """
-        Householder activation:
-        [this review](https://openreview.net/pdf?id=tD7eCtaSkR)
-        From [this repository](https://github.com/singlasahil14/SOC)
-
-        Args:
-            data_format (str): either channels_first or channels_last. Only
-                channels_last is supported.
-            k_coef_lip (str): The lipschitz coefficient to be enforced.
-            theta_initializer: initializer for the angle theta of reflection. Defaults
-                to pi/2, which corresponds to GroupSort2.
-            **kwargs: parameters passed to the `tf.keras.layers.Layer`.
-
-        Input shape:
-            Arbitrary. Use the keyword argument `input_shape` (tuple of integers, does
-            not include the samples axis) when using this layer as the first layer in a
-            model.
-
-        Output shape:
-            Same size as input.
-
-        """
+        super().__init__(k_coef_lip=k_coef_lip)
         if data_format != "channels_last":
             raise RuntimeError("Only 'channels_last' data format is supported")
-
         self.data_format = data_format
-        self.set_klip_factor(k_coef_lip)
+        self.channel_axis = -1
         self.theta_initializer = theta_initializer
-        super().__init__(**kwargs)
+        self.theta: Optional[nn.Parameter] = None
 
-    def build(self, input_shape):
-        super().build(input_shape)
-        self._init_lip_coef(input_shape)
-        if (input_shape[-1] % 2) != 0:
-            raise RuntimeError("2 has to be a divisor of the number of channels")
-
-        self.theta = self.add_weight(
-            "theta",
-            shape=[input_shape[-1] // 2],
-            initializer=self.theta_initializer,
-        )
+    def _build(self, input_shape: torch.Size, dtype: torch.dtype, device: torch.device):
+        channel_axis = _resolve_channel_axis(self.channel_axis, len(input_shape))
+        channels = input_shape[channel_axis]
+        if channels % 2 != 0:
+            raise RuntimeError("Number of channels must be divisible by 2 for Householder.")
+        half_channels = channels // 2
         if self.theta_initializer is None:
-            self.theta.assign(tf.ones_like(self.theta, dtype=tf.float32) * math.pi / 2)
+            initial_theta = torch.full((half_channels,), math.pi / 2, dtype=dtype, device=device)
+        else:
+            initial_theta = self.theta_initializer((half_channels,))
+            initial_theta = torch.as_tensor(initial_theta, dtype=dtype, device=device)
+        self.theta = nn.Parameter(initial_theta)
+        self.channel_axis = channel_axis
+        self._built = True
+        self._init_lip_coef(input_shape)
 
-    def _compute_lip_coef(self, input_shape=None):
-        return 1.0
-
-    def call(self, x):
-        z1, z2 = tf.split(x, 2, axis=-1)
-
-        # selector > 0 if point (z1, z2) is on one side of reflection line, else < 0.
-        # Reflection line is defined by angle theta/2.
-        selector = (z1 * tf.sin(0.5 * self.theta)) - (z2 * tf.cos(0.5 * self.theta))
-
-        cos_theta = tf.cos(self.theta)
-        sin_theta = tf.sin(self.theta)
+    def forward(self, x: Tensor) -> Tensor:
+        if not self._built:
+            self._build(x.shape, dtype=x.dtype, device=x.device)
+        theta = self.theta
+        x_perm = torch.movedim(x, self.channel_axis, -1)
+        z1, z2 = torch.chunk(x_perm, 2, dim=-1)
+        selector = (z1 * torch.sin(0.5 * theta)) - (z2 * torch.cos(0.5 * theta))
+        cos_theta = torch.cos(theta)
+        sin_theta = torch.sin(theta)
         reflected_z1 = z1 * cos_theta + z2 * sin_theta
         reflected_z2 = z1 * sin_theta - z2 * cos_theta
-
-        a = tf.where(selector <= 0, z1, reflected_z1)
-        b = tf.where(selector <= 0, z2, reflected_z2)
-
-        return tf.concat([a, b], axis=-1)
+        a = torch.where(selector <= 0, z1, reflected_z1)
+        b = torch.where(selector <= 0, z2, reflected_z2)
+        output = torch.cat([a, b], dim=-1)
+        output = torch.movedim(output, -1, self.channel_axis)
+        return output
 
     def get_config(self):
-        config = {
+        return {
             "k_coef_lip": self.k_coef_lip,
             "data_format": self.data_format,
             "theta_initializer": self.theta_initializer,
         }
-        base_config = super().get_config()
-        return dict(list(base_config.items()) + list(config.items()))
+
+
+class _PReLUlip(nn.Module, LipschitzLayer):
+    def __init__(self, num_parameters: int = 1, k_coef_lip: float = 1.0):
+        super().__init__()
+        self.set_klip_factor(k_coef_lip)
+        self.prelu = nn.PReLU(num_parameters=num_parameters)
+
+    def forward(self, x: Tensor) -> Tensor:
+        with torch.no_grad():
+            self.prelu.weight.clamp_(-self.k_coef_lip, self.k_coef_lip)
+        return self.prelu(x)
+
+
+def PReLUlip(k_coef_lip: float = 1.0, num_parameters: int = 1) -> _PReLUlip:
+    """
+    PReLU activation retaining Lipschitz constant by clamping the negative slope.
+    """
+    return _PReLUlip(num_parameters=num_parameters, k_coef_lip=k_coef_lip)
+
+
+__all__ = [
+    "MaxMin",
+    "GroupSort",
+    "GroupSort2",
+    "FullSort",
+    "PReLUlip",
+    "Householder",
+]
